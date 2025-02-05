@@ -169,7 +169,7 @@ class PlayerState:
 
 class PlayerActivity:
 
-    def __init__(self, cohort_id, platform_type, player_id, player_type, player_options, player_start_date):
+    def __init__(self, cohort_id, platform_type, player_id, player_type, player_options, player_start_date, player_players_options_random):
         self.cohort_id = cohort_id
         self.platform_type = platform_type
         self.player_id = player_id
@@ -178,6 +178,7 @@ class PlayerActivity:
         self.player_start_date = player_start_date
         self.current_day = 0
         self.user_registered = False
+        self.player_players_options_random = player_players_options_random
 
     def generate_events(self):
 
@@ -265,6 +266,7 @@ class GameActivity:
 
             for player_activity in old_players_activities:
 
+                player_activity.player_options = self.game_options.players_options[self.current_day][player_activity.player_players_options_random]
                 player_dataframe = player_activity.generate_events()
 
                 if player_dataframe is not None:
@@ -272,13 +274,16 @@ class GameActivity:
                     player_activities.append(player_activity)
 
             # handle new players activities
-            current_new_player = int(self.game_options.players_acquisition[self.current_day])
+            current_new_player = int(self.game_options.players_acquisition[self.current_day][self.current_day])
+
+            # print(f'new players {current_new_player} for day {self.current_day}')
 
             cohort_id = uuid.uuid4()
 
             while current_new_player > 0:
 
-                player_options = self.game_options.players_options[random.random()]
+                player_players_options_random = random.random()
+                player_options = self.game_options.players_options[self.current_day][player_players_options_random]
                 platform_type = WeightedDictionary({
                     PlatformType.PLAYSTATION_5.name: 0.1,
                     PlatformType.MICROSOFT_XBOX_ONE.name: 0.3,
@@ -297,7 +302,8 @@ class GameActivity:
                     player_id,
                     player_type,
                     player_options,
-                    player_start_date
+                    player_start_date,
+                    player_players_options_random
                 )
 
                 player_dataframe = player_activity.generate_events()
@@ -318,17 +324,44 @@ class GameActivity:
         return pd.concat(players_dataframes)
 
 
-def generate(filename, date, players, days, seed, plot, overwrite, debug):
+def generate(filename, game_events_filename, date, players, days, seed, plot, overwrite, debug, hardcore, casual, churner, decay_rate, noise_scale, noise_decay_rate):
     # set seed
     random.seed(seed)
 
     # generate events
     events_file = f'{filename}.csv'
 
-    if not exists(events_file) or overwrite:
+    players_options_days = []
+    players_acquisition_days = []
+    for i in range(days):
+        players_options_days.append(0)
+        players_acquisition_days.append(0)
 
+    players_options_presets = [[hardcore, casual, churner]]
+    players_acquisition_presets = [[decay_rate, noise_scale, noise_decay_rate]]
+
+    game_events_file = f'{game_events_filename}.csv'
+    if exists(game_events_file):
+        print('loading game events...')
+        game_events_dataframe = pd.read_csv(game_events_file)
+        for index, game_event in game_events_dataframe.iterrows():
+            # print(f"Game Event Row {index}: {game_event.to_dict()}")
+            event_game_start_date = pd.to_datetime(game_event['date'], dayfirst=True)
+            event_game_duration = int(game_event['duration'])
+            players_options_presets.append([game_event['hardcore']*hardcore, game_event['casual']*casual, game_event['churner']*churner])
+            # players_acquisition_presets.append([game_event['decay_rate'], game_event['noise_scale'], game_event['noise_decay_rate']])
+            players_acquisition_presets.append([decay_rate, noise_scale, noise_decay_rate])
+            for event_game_day in range(event_game_duration):
+                event_game_datetime = datetime.combine(event_game_start_date.date() + timedelta(days=event_game_day), datetime.min.time())
+                working_day = (event_game_datetime - date).days
+                if working_day >= 0 and working_day < days:
+                    players_options_days[working_day] = index + 1
+                    players_acquisition_days[working_day] = index + 1
+                    
+
+    if not exists(events_file) or overwrite:
         game_activity = GameActivity(
-            default_game_options(players, days),
+            default_game_options(players, days, players_options_days, players_acquisition_days, players_options_presets, players_acquisition_presets),
             date
         )
 
@@ -336,7 +369,7 @@ def generate(filename, date, players, days, seed, plot, overwrite, debug):
 
         if events_dataframe.size > 0:
             events_dataframe[PlayerEventField.timestamp.name] = pd.to_datetime(
-                events_dataframe[PlayerEventField.timestamp.name])
+                events_dataframe[PlayerEventField.timestamp.name], format="mixed")
             events_dataframe = events_dataframe.sort_values(by=[PlayerEventField.timestamp.name])
 
         print('storing events...')
@@ -357,13 +390,21 @@ def generate(filename, date, players, days, seed, plot, overwrite, debug):
 
     if plot:
 
+        # Convert the 'player_id' column to string type
+        # events_dataframe[PlayerEventField.player_id.name] = events_dataframe[PlayerEventField.player_id.name].astype(str)
         print('plot events...')
         player_index = 'player_index'
         events_by_players = events_dataframe.groupby([PlayerEventField.player_id.name])
 
         for index, (player_id, group) in enumerate(events_by_players):
-            events_dataframe.loc[events_dataframe[PlayerEventField.player_id.name] == player_id, player_index] = int(
-                index)
+            # player_id_str = str(player_id)  # Convert tuple to string
+            print("Data type of player_id in DataFrame:", events_dataframe[PlayerEventField.player_id.name].dtype)
+            print("Data type of player_id in loop:", type(player_id))
+            events_dataframe.loc[events_dataframe[PlayerEventField.player_id.name] == player_id, player_index] = int(index)
+            # Print the result of the loc function for debugging
+            debug_series = events_dataframe.loc[events_dataframe[PlayerEventField.player_id.name] == player_id]
+            print(f"Debug - loc result for player_id {player_id} at iteration {index}:")
+            print(debug_series['player_index'].values)
 
         first_event_timestamp = events_dataframe[PlayerEventField.timestamp.name].min()
         last_event_timestamp = events_dataframe[PlayerEventField.timestamp.name].max()
@@ -371,8 +412,9 @@ def generate(filename, date, players, days, seed, plot, overwrite, debug):
                                         first_event_timestamp.day)
         last_event_datetime = datetime(last_event_timestamp.year, last_event_timestamp.month,
                                        last_event_timestamp.day + 1)
-        first_player_index = int(events_dataframe[player_index].min())
-        last_player_index = int(events_dataframe[player_index].max()) + 2
+        # print(f'converting:{player_index}, {events_dataframe[player_index]}')
+        first_player_index = 0 # int(events_dataframe[player_index].min())
+        last_player_index = events_by_players.max() + 2 #int(events_dataframe[player_index].max()) + 2
 
         plot = events_dataframe.plot.scatter(
             x=PlayerEventField.timestamp.name, y=player_index,
@@ -385,3 +427,23 @@ def generate(filename, date, players, days, seed, plot, overwrite, debug):
         plot_file = f'{filename}.png'
         plot.get_figure().savefig(plot_file)
         print(f'events plotted in {plot_file}!')
+
+def simulate(filename, game_events_filename):
+    simulate_file = f'{filename}.csv'
+    if exists(simulate_file):
+        print('loading simulate evemts...')
+        simulate_events_dataframe = pd.read_csv(simulate_file)
+        for index, simulate_event in simulate_events_dataframe.iterrows():
+            # print(f"Simulate Event Row {index}: {simulate_event.to_dict()}")
+            event_filename = simulate_event['filename']
+            date = pd.to_datetime(simulate_event['date'], dayfirst=True)
+            players = simulate_event['players']
+            days = simulate_event['days']
+            seed = simulate_event['seed']
+            hardcore = simulate_event['hardcore']
+            casual = simulate_event['casual']
+            churner = simulate_event['churner']
+            decay_rate = simulate_event['decay_rate']
+            noise_scale = simulate_event['noise_scale']
+            noise_decay_rate = simulate_event['noise_decay_rate']
+            generate(event_filename, game_events_filename, date, players, days, seed, False, True, False, hardcore, casual, churner, decay_rate, noise_scale, noise_decay_rate)

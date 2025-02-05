@@ -153,7 +153,7 @@ class GameOptions:
         self.players_acquisition = players_acquisition
         self.simulation_days = simulation_days
 
-def default_game_options(players, days):
+def default_game_options(players, days, players_options_days, players_acquisition_days, players_options_presets, players_acquisition_presets):
 
     # sessions options
     morning_session_options = SessionOptions(
@@ -341,8 +341,10 @@ def default_game_options(players, days):
         LinearInterpolator({
             0: 0.7, # day 1 modifier for session probability
             6: 1.0,
-            13: 0.7,
-            27: 0.5
+            days * 0.1 : 0.7,
+            days * 0.3: 0.5,
+            days * 0.6: 0.2,
+            days * 0.8: 0.1
         })
     )
 
@@ -378,8 +380,10 @@ def default_game_options(players, days):
         }),
         LinearInterpolator({
             0: 0.7, # day 1 modifier for session probability
-            6: 1.0,
-            13: 0.3
+            days * 0.01: 1.0,
+            days * 0.1 : 0.5,
+            days * 0.3: 0.2,
+            days * 0.6: 0.1
         })
     )    
 
@@ -416,35 +420,63 @@ def default_game_options(players, days):
             0: 1.0, # day 1 modifier for session probability
             1: 1.0,
             2: 0.5,
-            6: 0.3,
-            13: 0
+            max(6, days * 0.1): 0.3,
+            max(6, days * 0.2): 0.1,
+            max(6, days * 0.3): 0.0,
         })
     )
 
-    game_options = GameOptions(
-        players_options = WeightedDictionary({
+    # Generate player acquisition with exponential decay and exponentially decreasing noise
+    def player_acquisition_with_noise(players, days, decay_rate=0.3, noise_scale=0.1, noise_decay_rate=0.3):
+        return [
+            max(0, int(
+                players * np.exp(-decay_rate * day) +
+                random.gauss(0, players * noise_scale * np.exp(-noise_decay_rate * day))
+            ))
+            for day in range(days)
+        ]
+    
+    players_options_sets = []
+
+    for players_options_preset in players_options_presets:
+        players_options_sets.append(WeightedDictionary({
             #bot_player: 1.0,
-            hardcore_player_options: 0.05,
-            casual_player_options: 0.1,
-            churner_player_options: 1.0,
-        }), 
-        players_acquisition = players * LinearInterpolator({
-                0: 1, # one player acquired day one
-                6: 2,
-                7: 0,
+            hardcore_player_options: players_options_preset[0],
+            casual_player_options: players_options_preset[1],
+            churner_player_options: players_options_preset[2],
+        }))
+
+    players_acquisition_sets = []
+
+    for players_acquisition_preset in players_acquisition_presets:
+        players_acquisition_sets.append(player_acquisition_with_noise(players, days, players_acquisition_preset[0], players_acquisition_preset[1], players_acquisition_preset[2]))
+
+    players_options = []
+    players_acquisition = []
+    for i in range(days):
+        players_options.append(players_options_sets[players_options_days[i]])
+        players_acquisition.append(players_acquisition_sets[players_acquisition_days[i]])
+
+    game_options = GameOptions(
+        players_options, 
+        # players_acquisition = players * LinearInterpolator({
+        #         0: 1, # one player acquired day one
+        #         6: 2,
+        #         7: 0,
     
-                13: 0,
-                14: 2,
-                20: 5,
-                21: 0,
+        #         13: 0,
+        #         14: 2,
+        #         20: 5,
+        #         21: 0,
     
-                27: 0,
-                28: 1,
-                34: 3,
-                35: 0
-            }, 
-            mod=True
-        ),
+        #         27: 0,
+        #         28: 1,
+        #         34: 3,
+        #         35: 0
+        #     }, 
+        #     mod=True
+        # ),
+        players_acquisition,
         simulation_days = days # simulation days
     )
 
